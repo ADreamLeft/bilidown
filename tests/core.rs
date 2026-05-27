@@ -81,3 +81,49 @@ fn parses_dash_tracks_and_selects_best_streams() {
         .expect("best audio");
     assert_eq!(audio.id, 30280);
 }
+
+#[test]
+fn parses_dash_tracks_when_bilibili_returns_duplicate_camel_and_snake_fields() {
+    let json = r#"{
+      "code": 0,
+      "data": {
+        "dash": {
+          "duration": 1,
+          "video": [{
+            "id": 80,
+            "baseUrl": "https://video.example/camel.m4s",
+            "base_url": "https://video.example/snake.m4s",
+            "backupUrl": ["https://video.example/camel-backup.m4s"],
+            "backup_url": ["https://video.example/snake-backup.m4s"],
+            "bandwidth": 1,
+            "codecid": 7,
+            "codecs": "avc1",
+            "width": 1920,
+            "height": 1080,
+            "frameRate": "30.000",
+            "frame_rate": "30.000"
+          }],
+          "audio": [{
+            "id": 30280,
+            "baseUrl": "https://audio.example/camel.m4s",
+            "base_url": "https://audio.example/snake.m4s",
+            "backupUrl": [],
+            "backup_url": [],
+            "bandwidth": 1,
+            "codecs": "mp4a.40.2"
+          }]
+        }
+      }
+    }"#;
+
+    let parsed = parse_play_response(json).unwrap();
+
+    assert_eq!(
+        parsed.video_tracks[0].base_url,
+        "https://video.example/snake.m4s"
+    );
+    assert_eq!(
+        parsed.audio_tracks[0].base_url,
+        "https://audio.example/snake.m4s"
+    );
+}

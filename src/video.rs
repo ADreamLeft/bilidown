@@ -256,8 +256,15 @@ pub fn parse_play_response(text: &str) -> anyhow::Result<ParsedPlay> {
 
     Ok(ParsedPlay {
         duration: dash.duration,
-        video_tracks: dash.video.into_iter().map(Into::into).collect(),
-        audio_tracks: audio.into_iter().map(Into::into).collect(),
+        video_tracks: dash
+            .video
+            .iter()
+            .map(parse_video_track)
+            .collect::<anyhow::Result<Vec<_>>>()?,
+        audio_tracks: audio
+            .iter()
+            .map(parse_audio_track)
+            .collect::<anyhow::Result<Vec<_>>>()?,
     })
 }
 
@@ -410,87 +417,91 @@ struct PlayData {
 struct DashData {
     duration: Option<u64>,
     #[serde(default)]
-    video: Vec<ApiVideoTrack>,
-    audio: Option<Vec<ApiAudioTrack>>,
+    video: Vec<serde_json::Value>,
+    audio: Option<Vec<serde_json::Value>>,
     dolby: Option<DolbyData>,
     flac: Option<FlacData>,
 }
 
 #[derive(Debug, Deserialize)]
 struct DolbyData {
-    audio: Option<Vec<ApiAudioTrack>>,
+    audio: Option<Vec<serde_json::Value>>,
 }
 
 #[derive(Debug, Deserialize)]
 struct FlacData {
-    audio: Option<ApiAudioTrack>,
+    audio: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Deserialize)]
-struct ApiVideoTrack {
-    id: u32,
-    #[serde(alias = "baseUrl", alias = "base_url")]
-    base_url: String,
-    #[serde(default, alias = "backupUrl", alias = "backup_url")]
-    backup_urls: Vec<String>,
-    #[serde(default)]
-    bandwidth: u64,
-    #[serde(default)]
-    codecid: Option<u32>,
-    #[serde(default)]
-    codecs: String,
-    #[serde(default)]
-    width: Option<u32>,
-    #[serde(default)]
-    height: Option<u32>,
-    #[serde(default, alias = "frameRate", alias = "frame_rate")]
-    frame_rate: Option<String>,
-    #[serde(default)]
-    size: Option<u64>,
+fn parse_video_track(value: &serde_json::Value) -> anyhow::Result<VideoTrack> {
+    let id = value_u32(value, "id")?;
+    let codecs = value_string_opt(value, "codecs").unwrap_or_default();
+    let codecid = value_u32_opt(value, "codecid");
+    Ok(VideoTrack {
+        quality_id: id,
+        quality_name: quality_name(id).to_string(),
+        base_url: value_string_any(value, &["base_url", "baseUrl"])?,
+        backup_urls: value_string_array_any(value, &["backup_url", "backupUrl"]),
+        codec_name: video_codec_name(codecid, &codecs),
+        codec_id: codecid,
+        bandwidth: value_u64_opt(value, "bandwidth").unwrap_or_default(),
+        width: value_u32_opt(value, "width"),
+        height: value_u32_opt(value, "height"),
+        frame_rate: value_string_any_opt(value, &["frame_rate", "frameRate"]),
+        size: value_u64_opt(value, "size"),
+    })
 }
 
-#[derive(Debug, Deserialize)]
-struct ApiAudioTrack {
-    id: u32,
-    #[serde(alias = "baseUrl", alias = "base_url")]
-    base_url: String,
-    #[serde(default, alias = "backupUrl", alias = "backup_url")]
-    backup_urls: Vec<String>,
-    #[serde(default)]
-    bandwidth: u64,
-    #[serde(default)]
-    codecs: String,
-    #[serde(default)]
-    size: Option<u64>,
+fn parse_audio_track(value: &serde_json::Value) -> anyhow::Result<AudioTrack> {
+    let codecs = value_string_opt(value, "codecs").unwrap_or_default();
+    Ok(AudioTrack {
+        id: value_u32(value, "id")?,
+        base_url: value_string_any(value, &["base_url", "baseUrl"])?,
+        backup_urls: value_string_array_any(value, &["backup_url", "backupUrl"]),
+        codec_name: audio_codec_name(&codecs),
+        bandwidth: value_u64_opt(value, "bandwidth").unwrap_or_default(),
+        size: value_u64_opt(value, "size"),
+    })
 }
 
-impl From<ApiVideoTrack> for VideoTrack {
-    fn from(value: ApiVideoTrack) -> Self {
-        Self {
-            quality_id: value.id,
-            quality_name: quality_name(value.id).to_string(),
-            base_url: value.base_url,
-            backup_urls: value.backup_urls,
-            codec_name: video_codec_name(value.codecid, &value.codecs),
-            codec_id: value.codecid,
-            bandwidth: value.bandwidth,
-            width: value.width,
-            height: value.height,
-            frame_rate: value.frame_rate,
-            size: value.size,
-        }
-    }
+fn value_string_any(value: &serde_json::Value, keys: &[&str]) -> anyhow::Result<String> {
+    value_string_any_opt(value, keys)
+        .with_context(|| format!("missing string field {}", keys.join("/")))
 }
 
-impl From<ApiAudioTrack> for AudioTrack {
-    fn from(value: ApiAudioTrack) -> Self {
-        Self {
-            id: value.id,
-            base_url: value.base_url,
-            backup_urls: value.backup_urls,
-            codec_name: audio_codec_name(&value.codecs),
-            bandwidth: value.bandwidth,
-            size: value.size,
-        }
-    }
+fn value_string_any_opt(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(|v| v.as_str()))
+        .map(ToString::to_string)
+}
+
+fn value_string_opt(value: &serde_json::Value, key: &str) -> Option<String> {
+    value.get(key)?.as_str().map(ToString::to_string)
+}
+
+fn value_string_array_any(value: &serde_json::Value, keys: &[&str]) -> Vec<String> {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(|v| v.as_array()))
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(ToString::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn value_u32(value: &serde_json::Value, key: &str) -> anyhow::Result<u32> {
+    value_u32_opt(value, key).with_context(|| format!("missing numeric field {key}"))
+}
+
+fn value_u32_opt(value: &serde_json::Value, key: &str) -> Option<u32> {
+    value
+        .get(key)?
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+}
+
+fn value_u64_opt(value: &serde_json::Value, key: &str) -> Option<u64> {
+    value.get(key)?.as_u64()
 }
