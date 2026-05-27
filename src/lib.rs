@@ -1,4 +1,7 @@
+pub mod archive;
+pub mod assets;
 pub mod auth;
+pub mod batch;
 pub mod client;
 pub mod config;
 pub mod download;

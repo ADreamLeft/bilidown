@@ -39,6 +39,9 @@ impl BiliClient {
         let http = reqwest::Client::builder()
             .default_headers(headers)
             .cookie_provider(Arc::clone(&cookie_store))
+            .no_gzip()
+            .no_brotli()
+            .no_deflate()
             .build()
             .context("build reqwest client")?;
 

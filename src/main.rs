@@ -1,12 +1,16 @@
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{collections::BTreeMap, path::PathBuf, str::FromStr};
 
 use anyhow::Context;
 use bilidown::{
+    archive::{Archive, ArchiveEntry, default_archive_path, read_archive, write_archive},
+    assets::{AssetOptions, download_cover, download_danmaku, download_subtitles, fetch_subtitles},
     auth,
+    batch::{BatchInput, fetch_batch_videos, parse_batch_input},
     client::BiliClient,
-    download::{download_stream, sidecar_path},
+    config::{self, AppConfig, ConfigKey},
+    download::{DownloadConfig, download_stream_with_urls, sidecar_path},
     fs_utils::render_output_path,
-    input::parse_video_input,
+    input::{VideoInput, parse_video_input},
     mux::mux_to_mp4,
     page::select_pages,
     video::{
@@ -64,7 +68,66 @@ enum Commands {
         /// 指定 ffmpeg 路径
         #[arg(long)]
         ffmpeg_path: Option<PathBuf>,
+        /// 并发 Range 分片连接数
+        #[arg(long)]
+        connections: Option<usize>,
+        /// 下载失败重试次数
+        #[arg(long)]
+        retries: Option<usize>,
+        /// 禁用多线程分片下载
+        #[arg(long, default_value_t = false)]
+        no_multi_thread: bool,
+        /// 下载封面
+        #[arg(long, default_value_t = false)]
+        cover: bool,
+        /// 下载字幕并转换为 srt
+        #[arg(long, default_value_t = false)]
+        subtitle: bool,
+        /// 下载弹幕 XML
+        #[arg(long, default_value_t = false)]
+        danmaku: bool,
+        /// 下载封面、字幕、弹幕
+        #[arg(long, default_value_t = false)]
+        all_assets: bool,
+        /// 多任务之间的延迟秒数
+        #[arg(long, default_value_t = 0)]
+        delay_per_page: u64,
+        /// 批量输入最多下载多少个视频
+        #[arg(long)]
+        limit: Option<usize>,
+        /// 下载完成后写入归档
+        #[arg(long, default_value_t = false)]
+        save_archive: bool,
+        /// 已在归档中的 aid/cid 跳过
+        #[arg(long, default_value_t = false)]
+        skip_archived: bool,
     },
+    /// 显示或修改默认配置
+    #[command(arg_required_else_help(true))]
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommands,
+    },
+    /// 查看或清空已下载归档
+    #[command(arg_required_else_help(true))]
+    Archive {
+        #[command(subcommand)]
+        command: ArchiveCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConfigCommands {
+    Show,
+    Path,
+    Set { key: String, value: String },
+    Unset { key: String },
+}
+
+#[derive(Subcommand)]
+enum ArchiveCommands {
+    List,
+    Clear,
 }
 
 #[tokio::main]
@@ -82,6 +145,7 @@ async fn main() {
 async fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let client = BiliClient::new()?;
+    let cfg = config::read_app_config()?;
 
     match cli.command {
         Commands::Login => auth::login(&client).await?,
@@ -97,19 +161,44 @@ async fn run() -> anyhow::Result<()> {
             template,
             skip_mux,
             ffmpeg_path,
+            connections,
+            retries,
+            no_multi_thread,
+            cover,
+            subtitle,
+            danmaku,
+            all_assets,
+            delay_per_page,
+            limit,
+            save_archive,
+            skip_archived,
         } => {
-            let opts = DownloadOptions {
+            let opts = DownloadOptions::from_cli(
+                &cfg,
                 page,
-                quality: QualityPreference::parse(&quality)?,
-                codec: CodecPreference::parse(&codec)?,
-                audio_quality: AudioQualityPreference::parse(&audio_quality)?,
+                quality,
+                codec,
+                audio_quality,
                 out_dir,
                 template,
                 skip_mux,
                 ffmpeg_path,
-            };
+                connections,
+                retries,
+                no_multi_thread,
+                cover,
+                subtitle,
+                danmaku,
+                all_assets,
+                delay_per_page,
+                limit,
+                save_archive,
+                skip_archived,
+            )?;
             command_download(&client, &input, opts).await?;
         }
+        Commands::Config { command } => command_config(command)?,
+        Commands::Archive { command } => command_archive(command)?,
     }
     Ok(())
 }
@@ -172,6 +261,97 @@ struct DownloadOptions {
     template: String,
     skip_mux: bool,
     ffmpeg_path: Option<PathBuf>,
+    download_config: DownloadConfig,
+    assets: AssetOptions,
+    delay_per_page: u64,
+    limit: Option<usize>,
+    save_archive: bool,
+    skip_archived: bool,
+}
+
+impl DownloadOptions {
+    #[allow(clippy::too_many_arguments)]
+    fn from_cli(
+        cfg: &AppConfig,
+        page: String,
+        quality: String,
+        codec: String,
+        audio_quality: String,
+        out_dir: PathBuf,
+        template: String,
+        skip_mux: bool,
+        ffmpeg_path: Option<PathBuf>,
+        connections: Option<usize>,
+        retries: Option<usize>,
+        no_multi_thread: bool,
+        cover: bool,
+        subtitle: bool,
+        danmaku: bool,
+        all_assets: bool,
+        delay_per_page: u64,
+        limit: Option<usize>,
+        save_archive: bool,
+        skip_archived: bool,
+    ) -> anyhow::Result<Self> {
+        let quality = if quality == "best" {
+            cfg.quality.as_deref().unwrap_or(&quality).to_string()
+        } else {
+            quality
+        };
+        let codec = if codec == "av1,hevc,avc" {
+            cfg.codec.as_deref().unwrap_or(&codec).to_string()
+        } else {
+            codec
+        };
+        let audio_quality = if audio_quality == "best" {
+            cfg.audio_quality
+                .as_deref()
+                .unwrap_or(&audio_quality)
+                .to_string()
+        } else {
+            audio_quality
+        };
+        let out_dir = if out_dir == PathBuf::from(".") {
+            cfg.output_dir.clone().unwrap_or(out_dir)
+        } else {
+            out_dir
+        };
+        let template = if template == DEFAULT_TEMPLATE {
+            cfg.template.clone().unwrap_or(template)
+        } else {
+            template
+        };
+        let connections = if no_multi_thread {
+            1
+        } else {
+            connections.or(cfg.connections).unwrap_or(8).max(1)
+        };
+
+        Ok(Self {
+            page,
+            quality: QualityPreference::parse(&quality)?,
+            codec: CodecPreference::parse(&codec)?,
+            audio_quality: AudioQualityPreference::parse(&audio_quality)?,
+            out_dir,
+            template,
+            skip_mux,
+            ffmpeg_path,
+            download_config: DownloadConfig {
+                connections,
+                retries: retries.or(cfg.retries).unwrap_or(3).max(1),
+            },
+            assets: AssetOptions {
+                cover: all_assets || cover || cfg.cover.unwrap_or(false),
+                subtitle: all_assets || subtitle || cfg.subtitle.unwrap_or(false),
+                danmaku: all_assets || danmaku || cfg.danmaku.unwrap_or(false),
+                embed_subtitle: false,
+            },
+            delay_per_page,
+            limit,
+            save_archive: save_archive || cfg.save_archive.unwrap_or(false),
+            skip_archived: skip_archived || cfg.skip_archived.unwrap_or(false),
+        })
+    }
 }
 
 async fn command_download(
@@ -179,17 +359,46 @@ async fn command_download(
     raw_input: &str,
     opts: DownloadOptions,
 ) -> anyhow::Result<()> {
-    let input = parse_video_input(raw_input)?;
-    let info = fetch_video_info(client, &input).await?;
-    let pages = select_pages(&opts.page, info.pages.len())?;
+    let batch_input = parse_batch_input(raw_input)?;
+    let videos = fetch_batch_videos(client, &batch_input).await?;
+    let videos = if let Some(limit) = opts.limit {
+        videos.into_iter().take(limit).collect::<Vec<_>>()
+    } else {
+        videos
+    };
+    let archive_path = default_archive_path()?;
+    let mut archive = read_archive(&archive_path)?;
 
-    for page_index in pages {
-        let page = info
-            .pages
-            .iter()
-            .find(|p| p.index == page_index)
-            .with_context(|| format!("page {page_index} not found"))?;
-        download_page(client, &info, page, &opts).await?;
+    for (video_idx, video) in videos.iter().enumerate() {
+        let input = VideoInput::Bvid(video.bvid.clone());
+        let info = fetch_video_info(client, &input).await?;
+        let pages = select_pages(&opts.page, info.pages.len())?;
+
+        for page_index in pages {
+            let page = info
+                .pages
+                .iter()
+                .find(|p| p.index == page_index)
+                .with_context(|| format!("page {page_index} not found"))?;
+            if opts.skip_archived && archive.contains(info.aid, page.cid) {
+                println!("跳过已归档：{} P{}", info.title, page.index);
+                continue;
+            }
+            if let Some(entry) = download_page(client, &info, page, &opts).await?
+                && opts.save_archive
+            {
+                archive.add(entry);
+                write_archive(&archive_path, &archive)?;
+            }
+        }
+
+        if opts.delay_per_page > 0 && video_idx + 1 < videos.len() {
+            tokio::time::sleep(std::time::Duration::from_secs(opts.delay_per_page)).await;
+        }
+
+        if matches!(batch_input, BatchInput::Single(_)) {
+            break;
+        }
     }
 
     Ok(())
@@ -200,7 +409,7 @@ async fn download_page(
     info: &VideoInfo,
     page: &VideoPage,
     opts: &DownloadOptions,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<ArchiveEntry>> {
     let parsed = fetch_play_info(client, info.aid, page.cid, opts.quality).await?;
     let video = parsed.select_video(opts.quality, &opts.codec)?;
     let audio = parsed.select_audio(opts.audio_quality)?;
@@ -233,14 +442,47 @@ async fn download_page(
     );
     println!("音频：{} {}kbps", audio.codec_name, audio.bandwidth / 1000);
 
-    download_stream(client, &video.base_url, &video_path, "video").await?;
-    download_stream(client, &audio.base_url, &audio_path, "audio").await?;
+    let mut video_urls = vec![video.base_url.clone()];
+    video_urls.extend(video.backup_urls.clone());
+    let mut audio_urls = vec![audio.base_url.clone()];
+    audio_urls.extend(audio.backup_urls.clone());
+
+    download_stream_with_urls(
+        client,
+        &video_urls,
+        &video_path,
+        "video",
+        opts.download_config,
+    )
+    .await?;
+    download_stream_with_urls(
+        client,
+        &audio_urls,
+        &audio_path,
+        "audio",
+        opts.download_config,
+    )
+    .await?;
+
+    if opts.assets.cover {
+        let _ = download_cover(client, &info.cover_url, &output, opts.download_config).await?;
+    }
+    if opts.assets.subtitle {
+        let subtitles = fetch_subtitles(client, info.aid, page.cid).await?;
+        let paths = download_subtitles(client, &subtitles, &output).await?;
+        if paths.is_empty() {
+            println!("未找到字幕。");
+        }
+    }
+    if opts.assets.danmaku {
+        let _ = download_danmaku(client, page.cid, &output).await?;
+    }
 
     if opts.skip_mux {
         println!("已跳过合并：");
         println!("  {}", video_path.display());
         println!("  {}", audio_path.display());
-        return Ok(());
+        return Ok(Some(archive_entry(info, page, &video, &audio, &output)));
     }
 
     mux_to_mp4(
@@ -254,5 +496,67 @@ async fn download_page(
     let _ = tokio::fs::remove_file(&audio_path).await;
 
     println!("下载完成：{}", output.display());
+    Ok(Some(archive_entry(info, page, &video, &audio, &output)))
+}
+
+fn archive_entry(
+    info: &VideoInfo,
+    page: &VideoPage,
+    video: &bilidown::video::VideoTrack,
+    audio: &bilidown::video::AudioTrack,
+    output: &std::path::Path,
+) -> ArchiveEntry {
+    ArchiveEntry {
+        aid: info.aid,
+        cid: page.cid,
+        quality: video.quality_name.clone(),
+        codec: video.codec_name.clone(),
+        audio: audio.id.to_string(),
+        output: output.display().to_string(),
+        completed_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or_default(),
+    }
+}
+
+fn command_config(command: ConfigCommands) -> anyhow::Result<()> {
+    match command {
+        ConfigCommands::Show => {
+            let cfg = config::read_app_config()?;
+            println!("{}", toml::to_string_pretty(&cfg)?);
+        }
+        ConfigCommands::Path => println!("{}", config::config_path()?.display()),
+        ConfigCommands::Set { key, value } => {
+            let mut cfg = config::read_app_config()?;
+            cfg.set(ConfigKey::from_str(&key)?, &value)?;
+            config::write_app_config(&cfg)?;
+        }
+        ConfigCommands::Unset { key } => {
+            let mut cfg = config::read_app_config()?;
+            cfg.unset(ConfigKey::from_str(&key)?);
+            config::write_app_config(&cfg)?;
+        }
+    }
+    Ok(())
+}
+
+fn command_archive(command: ArchiveCommands) -> anyhow::Result<()> {
+    let path = default_archive_path()?;
+    match command {
+        ArchiveCommands::List => {
+            let archive = read_archive(&path)?;
+            for entry in archive.entries {
+                println!(
+                    "{} {} {} {} {}",
+                    entry.aid, entry.cid, entry.quality, entry.codec, entry.output
+                );
+            }
+        }
+        ArchiveCommands::Clear => {
+            write_archive(&path, &Archive::default())?;
+            println!("归档已清空。");
+        }
+    }
     Ok(())
 }
