@@ -1,0 +1,32 @@
+[package]
+name = "bilidown"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+cookie_store = "0.21"
+directories = "6.0"
+futures-util = "0.3"
+hex = "0.4"
+indicatif = "0.17"
+md-5 = "0.10"
+percent-encoding = "2.3"
+qrcode = "0.14"
+regex = "1.11"
+reqwest = { version = "0.12", features = ["cookies", "gzip", "brotli", "deflate", "json", "stream"] }
+reqwest_cookie_store = "0.8"
+sanitize-filename = "0.5"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.48", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "time"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2.5"
+which = "8.0"
+
+[dev-dependencies]
+tempfile = "3.23"
