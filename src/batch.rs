@@ -27,27 +27,27 @@ pub fn parse_batch_input(input: &str) -> anyhow::Result<BatchInput> {
 
     let collection_re =
         Regex::new(r"(?i)(?:collectiondetail\?sid=|[?&]sid=|listBizId:)(\d+)").unwrap();
-    if input.contains("collection") || input.contains("listBizId:") {
-        if let Some(caps) = collection_re.captures(input) {
-            return Ok(BatchInput::Collection {
-                sid: caps[1].parse()?,
-            });
-        }
+    if (input.contains("collection") || input.contains("listBizId:"))
+        && let Some(caps) = collection_re.captures(input)
+    {
+        return Ok(BatchInput::Collection {
+            sid: caps[1].parse()?,
+        });
     }
 
     let fav_re = Regex::new(r"(?i)(?:favlist\?fid=|[?&]fid=|favId:)(\d+)").unwrap();
-    if input.contains("favlist") || input.contains("favId:") {
-        if let Some(caps) = fav_re.captures(input) {
-            let owner_mid = Regex::new(r"space\.bilibili\.com/(\d+)")
-                .unwrap()
-                .captures(input)
-                .map(|caps| caps[1].parse())
-                .transpose()?;
-            return Ok(BatchInput::Favorite {
-                media_id: caps[1].parse()?,
-                owner_mid,
-            });
-        }
+    if (input.contains("favlist") || input.contains("favId:"))
+        && let Some(caps) = fav_re.captures(input)
+    {
+        let owner_mid = Regex::new(r"space\.bilibili\.com/(\d+)")
+            .unwrap()
+            .captures(input)
+            .map(|caps| caps[1].parse())
+            .transpose()?;
+        return Ok(BatchInput::Favorite {
+            media_id: caps[1].parse()?,
+            owner_mid,
+        });
     }
 
     Ok(BatchInput::Single(parse_video_input(input)?))
