@@ -1,10 +1,14 @@
 use std::collections::BTreeMap;
 
 use bilidown::{
+    commands::{DownloadMode, default_output_extension, select_download_tracks},
     fs_utils::safe_path_component,
     input::{VideoInput, parse_video_input},
     page::select_pages,
-    video::{AudioQualityPreference, CodecPreference, QualityPreference, parse_play_response},
+    video::{
+        AudioQualityPreference, AudioTrack, CodecPreference, ParsedPlay, QualityPreference,
+        VideoTrack, parse_play_response,
+    },
     wbi::{mixin_key, sign_params_at},
 };
 
@@ -80,6 +84,107 @@ fn parses_dash_tracks_and_selects_best_streams() {
         .select_audio(AudioQualityPreference::Best)
         .expect("best audio");
     assert_eq!(audio.id, 30280);
+}
+
+#[test]
+fn download_modes_select_only_required_streams() {
+    let parsed = parse_play_response(DASH_FIXTURE).unwrap();
+    let codec = CodecPreference::parse("av1,hevc,avc").unwrap();
+
+    let both = select_download_tracks(
+        &parsed,
+        DownloadMode::Both,
+        QualityPreference::Best,
+        &codec,
+        AudioQualityPreference::Best,
+    )
+    .unwrap();
+    assert!(both.video.is_some());
+    assert!(both.audio.is_some());
+
+    let audio = select_download_tracks(
+        &parsed,
+        DownloadMode::Audio,
+        QualityPreference::Best,
+        &codec,
+        AudioQualityPreference::Best,
+    )
+    .unwrap();
+    assert!(audio.video.is_none());
+    assert!(audio.audio.is_some());
+
+    let video = select_download_tracks(
+        &parsed,
+        DownloadMode::Video,
+        QualityPreference::Best,
+        &codec,
+        AudioQualityPreference::Best,
+    )
+    .unwrap();
+    assert!(video.video.is_some());
+    assert!(video.audio.is_none());
+}
+
+#[test]
+fn download_modes_choose_expected_default_extensions() {
+    assert_eq!(default_output_extension(DownloadMode::Both), "mp4");
+    assert_eq!(default_output_extension(DownloadMode::Audio), "m4a");
+    assert_eq!(default_output_extension(DownloadMode::Video), "mp4");
+}
+
+#[test]
+fn single_stream_modes_do_not_require_the_other_stream_type() {
+    let codec = CodecPreference::parse("av1,hevc,avc").unwrap();
+    let audio_only_play = ParsedPlay {
+        duration: Some(1),
+        video_tracks: Vec::new(),
+        audio_tracks: vec![AudioTrack {
+            id: 30280,
+            base_url: "https://audio.example/audio.m4s".to_string(),
+            backup_urls: Vec::new(),
+            codec_name: "M4A".to_string(),
+            bandwidth: 128_000,
+            size: None,
+        }],
+    };
+    let video_only_play = ParsedPlay {
+        duration: Some(1),
+        video_tracks: vec![VideoTrack {
+            quality_id: 80,
+            quality_name: "1080P 高清".to_string(),
+            base_url: "https://video.example/video.m4s".to_string(),
+            backup_urls: Vec::new(),
+            codec_name: "AVC".to_string(),
+            codec_id: Some(7),
+            bandwidth: 1_000_000,
+            width: Some(1920),
+            height: Some(1080),
+            frame_rate: Some("30".to_string()),
+            size: None,
+        }],
+        audio_tracks: Vec::new(),
+    };
+
+    assert!(
+        select_download_tracks(
+            &audio_only_play,
+            DownloadMode::Audio,
+            QualityPreference::Best,
+            &codec,
+            AudioQualityPreference::Best,
+        )
+        .is_ok()
+    );
+    assert!(
+        select_download_tracks(
+            &video_only_play,
+            DownloadMode::Video,
+            QualityPreference::Best,
+            &codec,
+            AudioQualityPreference::Best,
+        )
+        .is_ok()
+    );
 }
 
 #[test]

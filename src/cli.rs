@@ -50,6 +50,12 @@ enum Commands {
         /// 只下载 video/audio m4s 文件，不执行 ffmpeg 合并
         #[arg(long, default_value_t = false)]
         skip_mux: bool,
+        /// 只下载音频流
+        #[arg(long, default_value_t = false, conflicts_with = "video_only")]
+        audio_only: bool,
+        /// 只下载视频流
+        #[arg(long, default_value_t = false, conflicts_with = "audio_only")]
+        video_only: bool,
         /// 指定 ffmpeg 路径
         #[arg(long)]
         ffmpeg_path: Option<PathBuf>,
@@ -133,6 +139,8 @@ pub async fn run() -> anyhow::Result<()> {
             out_dir,
             template,
             skip_mux,
+            audio_only,
+            video_only,
             ffmpeg_path,
             connections,
             retries,
@@ -155,6 +163,8 @@ pub async fn run() -> anyhow::Result<()> {
                 out_dir,
                 template,
                 skip_mux,
+                audio_only,
+                video_only,
                 ffmpeg_path,
                 connections,
                 retries,

@@ -38,6 +38,38 @@ pub async fn mux_to_mp4(
     Ok(())
 }
 
+pub async fn mux_single_stream(
+    ffmpeg_path: Option<&Path>,
+    input_path: &Path,
+    output_path: &Path,
+) -> anyhow::Result<()> {
+    let ffmpeg = resolve_ffmpeg(ffmpeg_path)?;
+    if let Some(parent) = output_path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+
+    let status = Command::new(&ffmpeg)
+        .arg("-y")
+        .arg("-hide_banner")
+        .arg("-loglevel")
+        .arg("warning")
+        .arg("-i")
+        .arg(input_path)
+        .arg("-c")
+        .arg("copy")
+        .arg("-movflags")
+        .arg("faststart")
+        .arg(output_path)
+        .status()
+        .await
+        .with_context(|| format!("execute ffmpeg at {}", ffmpeg.display()))?;
+
+    if !status.success() {
+        anyhow::bail!("ffmpeg failed with status {status}");
+    }
+    Ok(())
+}
+
 fn resolve_ffmpeg(path: Option<&Path>) -> anyhow::Result<PathBuf> {
     if let Some(path) = path {
         if path.exists() {

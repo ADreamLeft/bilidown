@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use bilidown::{
-    archive::{Archive, ArchiveEntry},
+    archive::{Archive, ArchiveEntry, ArchiveMode},
     assets::{bili_subtitle_json_to_srt, detect_image_extension},
     batch::{BatchInput, parse_batch_input},
     config::{AppConfig, ConfigKey},
@@ -70,6 +70,7 @@ fn archive_records_and_detects_completed_items() {
     let entry = ArchiveEntry {
         aid: 1,
         cid: 2,
+        mode: ArchiveMode::Both,
         quality: "1080P 高清".to_string(),
         codec: "AVC".to_string(),
         audio: "30280".to_string(),
@@ -77,7 +78,49 @@ fn archive_records_and_detects_completed_items() {
         completed_at: 1_700_000_000,
     };
 
-    assert!(!archive.contains(1, 2));
+    assert!(!archive.contains(1, 2, ArchiveMode::Both));
     archive.add(entry);
-    assert!(archive.contains(1, 2));
+    assert!(archive.contains(1, 2, ArchiveMode::Both));
+    assert!(!archive.contains(1, 2, ArchiveMode::Audio));
+}
+
+#[test]
+fn archive_tracks_download_modes_independently() {
+    let mut archive = Archive::default();
+    for mode in [ArchiveMode::Both, ArchiveMode::Audio, ArchiveMode::Video] {
+        archive.add(ArchiveEntry {
+            aid: 1,
+            cid: 2,
+            mode,
+            quality: "1080P 高清".to_string(),
+            codec: "AVC".to_string(),
+            audio: "30280".to_string(),
+            output: format!("{mode}.out"),
+            completed_at: 1_700_000_000,
+        });
+    }
+
+    assert_eq!(archive.entries.len(), 3);
+    assert!(archive.contains(1, 2, ArchiveMode::Both));
+    assert!(archive.contains(1, 2, ArchiveMode::Audio));
+    assert!(archive.contains(1, 2, ArchiveMode::Video));
+}
+
+#[test]
+fn archive_defaults_missing_mode_to_both_for_old_files() {
+    let archive: Archive = toml::from_str(
+        r#"
+[[entries]]
+aid = 1
+cid = 2
+quality = "1080P 高清"
+codec = "AVC"
+audio = "30280"
+output = "out.mp4"
+completed_at = 1700000000
+"#,
+    )
+    .unwrap();
+
+    assert_eq!(archive.entries[0].mode, ArchiveMode::Both);
 }

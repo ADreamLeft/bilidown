@@ -7,7 +7,9 @@ use std::{
 use anyhow::Context;
 
 use crate::{
-    archive::{Archive, ArchiveEntry, default_archive_path, read_archive, write_archive},
+    archive::{
+        Archive, ArchiveEntry, ArchiveMode, default_archive_path, read_archive, write_archive,
+    },
     assets::{AssetOptions, download_cover, download_danmaku, download_subtitles, fetch_subtitles},
     batch::{BatchInput, fetch_batch_videos, parse_batch_input},
     cli::{ArchiveCommands, ConfigCommands, DEFAULT_TEMPLATE},
@@ -16,11 +18,11 @@ use crate::{
     download::{DownloadConfig, download_stream_with_urls, sidecar_path},
     fs_utils::render_output_path,
     input::{VideoInput, parse_video_input},
-    mux::mux_to_mp4,
+    mux::{mux_single_stream, mux_to_mp4},
     page::select_pages,
     video::{
-        AudioQualityPreference, CodecPreference, QualityPreference, VideoInfo, VideoPage,
-        fetch_play_info, fetch_video_info,
+        AudioQualityPreference, AudioTrack, CodecPreference, ParsedPlay, QualityPreference,
+        VideoInfo, VideoPage, VideoTrack, fetch_play_info, fetch_video_info,
     },
 };
 
@@ -80,7 +82,9 @@ pub struct DownloadOptions {
     audio_quality: AudioQualityPreference,
     out_dir: PathBuf,
     template: String,
+    template_is_default: bool,
     skip_mux: bool,
+    mode: DownloadMode,
     ffmpeg_path: Option<PathBuf>,
     download_config: DownloadConfig,
     assets: AssetOptions,
@@ -88,6 +92,40 @@ pub struct DownloadOptions {
     limit: Option<usize>,
     save_archive: bool,
     skip_archived: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DownloadMode {
+    Both,
+    Audio,
+    Video,
+}
+
+impl DownloadMode {
+    fn archive_mode(self) -> ArchiveMode {
+        match self {
+            Self::Both => ArchiveMode::Both,
+            Self::Audio => ArchiveMode::Audio,
+            Self::Video => ArchiveMode::Video,
+        }
+    }
+
+    fn default_extension(self) -> &'static str {
+        default_output_extension(self)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectedDownloadTracks {
+    pub video: Option<VideoTrack>,
+    pub audio: Option<AudioTrack>,
+}
+
+pub fn default_output_extension(mode: DownloadMode) -> &'static str {
+    match mode {
+        DownloadMode::Both | DownloadMode::Video => "mp4",
+        DownloadMode::Audio => "m4a",
+    }
 }
 
 impl DownloadOptions {
@@ -101,6 +139,8 @@ impl DownloadOptions {
         out_dir: PathBuf,
         template: String,
         skip_mux: bool,
+        audio_only: bool,
+        video_only: bool,
         ffmpeg_path: Option<PathBuf>,
         connections: Option<usize>,
         retries: Option<usize>,
@@ -142,10 +182,16 @@ impl DownloadOptions {
         } else {
             template
         };
+        let template_is_default = template == DEFAULT_TEMPLATE;
         let connections = if no_multi_thread {
             1
         } else {
             connections.or(cfg.connections).unwrap_or(8).max(1)
+        };
+        let mode = match (audio_only, video_only) {
+            (true, false) => DownloadMode::Audio,
+            (false, true) => DownloadMode::Video,
+            _ => DownloadMode::Both,
         };
 
         Ok(Self {
@@ -155,7 +201,9 @@ impl DownloadOptions {
             audio_quality: AudioQualityPreference::parse(&audio_quality)?,
             out_dir,
             template,
+            template_is_default,
             skip_mux,
+            mode,
             ffmpeg_path,
             download_config: DownloadConfig {
                 connections,
@@ -201,7 +249,8 @@ pub async fn download(
                 .iter()
                 .find(|p| p.index == page_index)
                 .with_context(|| format!("page {page_index} not found"))?;
-            if opts.skip_archived && archive.contains(info.aid, page.cid) {
+            if opts.skip_archived && archive.contains(info.aid, page.cid, opts.mode.archive_mode())
+            {
                 println!("跳过已归档：{} P{}", info.title, page.index);
                 continue;
             }
@@ -232,58 +281,85 @@ async fn download_page(
     opts: &DownloadOptions,
 ) -> anyhow::Result<Option<ArchiveEntry>> {
     let parsed = fetch_play_info(client, info.aid, page.cid, opts.quality).await?;
-    let video = parsed.select_video(opts.quality, &opts.codec)?;
-    let audio = parsed.select_audio(opts.audio_quality)?;
+    let tracks = select_download_tracks(
+        &parsed,
+        opts.mode,
+        opts.quality,
+        &opts.codec,
+        opts.audio_quality,
+    )?;
 
     let mut vars = BTreeMap::new();
     vars.insert("title", info.title.clone());
     vars.insert("page", page.index.to_string());
     vars.insert("part", page.title.clone());
-    vars.insert("quality", video.quality_name.clone());
-    vars.insert("codec", video.codec_name.clone());
+    vars.insert(
+        "quality",
+        tracks
+            .video
+            .as_ref()
+            .map(|video| video.quality_name.clone())
+            .unwrap_or_else(|| "audio".to_string()),
+    );
+    vars.insert(
+        "codec",
+        tracks
+            .video
+            .as_ref()
+            .map(|video| video.codec_name.clone())
+            .or_else(|| tracks.audio.as_ref().map(|audio| audio.codec_name.clone()))
+            .unwrap_or_else(|| "unknown".to_string()),
+    );
     vars.insert("bvid", info.bvid.clone());
     vars.insert("aid", info.aid.to_string());
     vars.insert("cid", page.cid.to_string());
     vars.insert("owner", info.owner_name.clone());
 
     let mut output = render_output_path(&opts.out_dir, &opts.template, &vars);
-    if output.extension().is_none() {
-        output.set_extension("mp4");
+    if output.extension().is_none() || opts.template_is_default {
+        output.set_extension(opts.mode.default_extension());
     }
 
     let video_path = sidecar_path(&output, "video.m4s");
     let audio_path = sidecar_path(&output, "audio.m4s");
 
     println!("下载 P{}：{}", page.index, page.title);
-    println!(
-        "视频：{} {} {}kbps",
-        video.quality_name,
-        video.codec_name,
-        video.bandwidth / 1000
-    );
-    println!("音频：{} {}kbps", audio.codec_name, audio.bandwidth / 1000);
+    if let Some(video) = &tracks.video {
+        println!(
+            "视频：{} {} {}kbps",
+            video.quality_name,
+            video.codec_name,
+            video.bandwidth / 1000
+        );
+    }
+    if let Some(audio) = &tracks.audio {
+        println!("音频：{} {}kbps", audio.codec_name, audio.bandwidth / 1000);
+    }
 
-    let mut video_urls = vec![video.base_url.clone()];
-    video_urls.extend(video.backup_urls.clone());
-    let mut audio_urls = vec![audio.base_url.clone()];
-    audio_urls.extend(audio.backup_urls.clone());
-
-    download_stream_with_urls(
-        client,
-        &video_urls,
-        &video_path,
-        "video",
-        opts.download_config,
-    )
-    .await?;
-    download_stream_with_urls(
-        client,
-        &audio_urls,
-        &audio_path,
-        "audio",
-        opts.download_config,
-    )
-    .await?;
+    if let Some(video) = &tracks.video {
+        let mut video_urls = vec![video.base_url.clone()];
+        video_urls.extend(video.backup_urls.clone());
+        download_stream_with_urls(
+            client,
+            &video_urls,
+            &video_path,
+            "video",
+            opts.download_config,
+        )
+        .await?;
+    }
+    if let Some(audio) = &tracks.audio {
+        let mut audio_urls = vec![audio.base_url.clone()];
+        audio_urls.extend(audio.backup_urls.clone());
+        download_stream_with_urls(
+            client,
+            &audio_urls,
+            &audio_path,
+            "audio",
+            opts.download_config,
+        )
+        .await?;
+    }
 
     if opts.assets.cover {
         let _ = download_cover(client, &info.cover_url, &output, opts.download_config).await?;
@@ -301,44 +377,97 @@ async fn download_page(
 
     if opts.skip_mux {
         println!("已跳过合并：");
-        println!("  {}", video_path.display());
-        println!("  {}", audio_path.display());
-        return Ok(Some(archive_entry(info, page, &video, &audio, &output)));
+        if tracks.video.is_some() {
+            println!("  {}", video_path.display());
+        }
+        if tracks.audio.is_some() {
+            println!("  {}", audio_path.display());
+        }
+        return Ok(Some(archive_entry(info, page, &tracks, opts.mode, &output)));
     }
 
-    mux_to_mp4(
-        opts.ffmpeg_path.as_deref(),
-        &video_path,
-        &audio_path,
-        &output,
-    )
-    .await?;
-    let _ = tokio::fs::remove_file(&video_path).await;
-    let _ = tokio::fs::remove_file(&audio_path).await;
+    match opts.mode {
+        DownloadMode::Both => {
+            mux_to_mp4(
+                opts.ffmpeg_path.as_deref(),
+                &video_path,
+                &audio_path,
+                &output,
+            )
+            .await?;
+            let _ = tokio::fs::remove_file(&video_path).await;
+            let _ = tokio::fs::remove_file(&audio_path).await;
+        }
+        DownloadMode::Audio => {
+            mux_single_stream(opts.ffmpeg_path.as_deref(), &audio_path, &output).await?;
+            let _ = tokio::fs::remove_file(&audio_path).await;
+        }
+        DownloadMode::Video => {
+            mux_single_stream(opts.ffmpeg_path.as_deref(), &video_path, &output).await?;
+            let _ = tokio::fs::remove_file(&video_path).await;
+        }
+    }
 
     println!("下载完成：{}", output.display());
-    Ok(Some(archive_entry(info, page, &video, &audio, &output)))
+    Ok(Some(archive_entry(info, page, &tracks, opts.mode, &output)))
 }
 
 fn archive_entry(
     info: &VideoInfo,
     page: &VideoPage,
-    video: &crate::video::VideoTrack,
-    audio: &crate::video::AudioTrack,
+    tracks: &SelectedDownloadTracks,
+    mode: DownloadMode,
     output: &std::path::Path,
 ) -> ArchiveEntry {
     ArchiveEntry {
         aid: info.aid,
         cid: page.cid,
-        quality: video.quality_name.clone(),
-        codec: video.codec_name.clone(),
-        audio: audio.id.to_string(),
+        mode: mode.archive_mode(),
+        quality: tracks
+            .video
+            .as_ref()
+            .map(|video| video.quality_name.clone())
+            .unwrap_or_else(|| "audio".to_string()),
+        codec: tracks
+            .video
+            .as_ref()
+            .map(|video| video.codec_name.clone())
+            .or_else(|| tracks.audio.as_ref().map(|audio| audio.codec_name.clone()))
+            .unwrap_or_else(|| "unknown".to_string()),
+        audio: tracks
+            .audio
+            .as_ref()
+            .map(|audio| audio.id.to_string())
+            .unwrap_or_default(),
         output: output.display().to_string(),
         completed_at: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
             .unwrap_or_default(),
     }
+}
+
+pub fn select_download_tracks(
+    parsed: &ParsedPlay,
+    mode: DownloadMode,
+    quality: QualityPreference,
+    codec: &CodecPreference,
+    audio_quality: AudioQualityPreference,
+) -> anyhow::Result<SelectedDownloadTracks> {
+    Ok(match mode {
+        DownloadMode::Both => SelectedDownloadTracks {
+            video: Some(parsed.select_video(quality, codec)?),
+            audio: Some(parsed.select_audio(audio_quality)?),
+        },
+        DownloadMode::Audio => SelectedDownloadTracks {
+            video: None,
+            audio: Some(parsed.select_audio(audio_quality)?),
+        },
+        DownloadMode::Video => SelectedDownloadTracks {
+            video: Some(parsed.select_video(quality, codec)?),
+            audio: None,
+        },
+    })
 }
 
 pub fn config(command: ConfigCommands) -> anyhow::Result<()> {
