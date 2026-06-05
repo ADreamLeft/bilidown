@@ -5,6 +5,7 @@ edition = "2024"
 description = "A Rust command-line downloader for Bilibili Web DASH videos"
 license = "MIT"
 readme = "README.md"
+repository = "https://github.com/ADreamLeft/bilidown"
 keywords = ["bilibili", "downloader", "cli", "rust"]
 categories = ["command-line-utilities", "multimedia"]
 
