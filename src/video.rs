@@ -229,6 +229,26 @@ pub async fn fetch_play_info(
     parse_play_response(&text)
 }
 
+/// 番剧/影视（PGC）取流：用 `/pgc/player/web/playurl`，无需 WBI 签名，
+/// 返回的 DASH 结构与普通投稿一致，可复用 [`parse_play_response`]。
+pub async fn fetch_pgc_play_info(
+    client: &BiliClient,
+    ep_id: u64,
+    aid: u64,
+    cid: u64,
+    quality: QualityPreference,
+) -> anyhow::Result<ParsedPlay> {
+    let qn = match quality {
+        QualityPreference::Best => "127".to_string(),
+        QualityPreference::Id(id) => id.to_string(),
+    };
+    let url = format!(
+        "https://api.bilibili.com/pgc/player/web/playurl?ep_id={ep_id}&avid={aid}&cid={cid}&qn={qn}&fnval=4048&fnver=0&fourk=1"
+    );
+    let text = client.get_text(&url).await?;
+    parse_play_response(&text)
+}
+
 pub fn parse_play_response(text: &str) -> anyhow::Result<ParsedPlay> {
     let resp: PlayResponse = serde_json::from_str(text).context("parse playurl response")?;
     if resp.code != 0 {
@@ -244,6 +264,7 @@ pub fn parse_play_response(text: &str) -> anyhow::Result<ParsedPlay> {
         .context("playurl API returned no data")?;
     let dash = data
         .dash
+        .or_else(|| data.video_info.and_then(|info| info.dash))
         .context("playurl response does not contain DASH")?;
 
     let mut audio = dash.audio.unwrap_or_default();
@@ -410,6 +431,13 @@ struct PlayResponse {
 
 #[derive(Debug, Deserialize)]
 struct PlayData {
+    dash: Option<DashData>,
+    /// 部分 PGC 接口把 dash 包在 video_info 里
+    video_info: Option<VideoInfoWrap>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VideoInfoWrap {
     dash: Option<DashData>,
 }
 

@@ -11,6 +11,7 @@ use crate::{
         Archive, ArchiveEntry, ArchiveMode, default_archive_path, read_archive, write_archive,
     },
     assets::{AssetOptions, download_cover, download_danmaku, download_subtitles, fetch_subtitles},
+    bangumi::{BangumiInput, Episode, Season, fetch_season, parse_bangumi_input},
     batch::{BatchInput, fetch_batch_videos, parse_batch_input},
     cli::{ArchiveCommands, ConfigCommands, DEFAULT_TEMPLATE},
     client::BiliClient,
@@ -22,11 +23,14 @@ use crate::{
     page::select_pages,
     video::{
         AudioQualityPreference, AudioTrack, CodecPreference, ParsedPlay, QualityPreference,
-        VideoInfo, VideoPage, VideoTrack, fetch_play_info, fetch_video_info,
+        VideoInfo, VideoPage, VideoTrack, fetch_pgc_play_info, fetch_play_info, fetch_video_info,
     },
 };
 
 pub async fn info(client: &BiliClient, raw_input: &str) -> anyhow::Result<()> {
+    if let Some(bangumi) = parse_bangumi_input(raw_input) {
+        return info_bangumi(client, &bangumi).await;
+    }
     let input = parse_video_input(raw_input)?;
     let info = fetch_video_info(client, &input).await?;
 
@@ -72,6 +76,25 @@ pub async fn info(client: &BiliClient, raw_input: &str) -> anyhow::Result<()> {
         );
     }
 
+    Ok(())
+}
+
+async fn info_bangumi(client: &BiliClient, input: &BangumiInput) -> anyhow::Result<()> {
+    let season = fetch_season(client, input).await?;
+    println!("{}", season.title);
+    println!("共 {} 集", season.episodes.len());
+    println!();
+    for ep in &season.episodes {
+        let extra = if ep.long_title.trim().is_empty() {
+            String::new()
+        } else {
+            format!("  {}", ep.long_title)
+        };
+        println!(
+            "  EP{} {}{}  ep_id={} cid={}",
+            ep.index, ep.title, extra, ep.ep_id, ep.cid
+        );
+    }
     Ok(())
 }
 
@@ -228,6 +251,9 @@ pub async fn download(
     raw_input: &str,
     opts: DownloadOptions,
 ) -> anyhow::Result<()> {
+    if let Some(bangumi) = parse_bangumi_input(raw_input) {
+        return download_bangumi(client, &bangumi, &opts).await;
+    }
     let batch_input = parse_batch_input(raw_input)?;
     let videos = fetch_batch_videos(client, &batch_input).await?;
     let videos = if let Some(limit) = opts.limit {
@@ -281,8 +307,135 @@ async fn download_page(
     opts: &DownloadOptions,
 ) -> anyhow::Result<Option<ArchiveEntry>> {
     let parsed = fetch_play_info(client, info.aid, page.cid, opts.quality).await?;
+    let source = StreamSource {
+        parsed,
+        label: format!("P{}", page.index),
+        title: info.title.clone(),
+        page_var: page.index.to_string(),
+        part: page.title.clone(),
+        bvid: info.bvid.clone(),
+        aid: info.aid,
+        cid: page.cid,
+        owner: info.owner_name.clone(),
+        cover_url: info.cover_url.clone(),
+    };
+    download_source(client, &source, opts).await
+}
+
+async fn download_bangumi(
+    client: &BiliClient,
+    input: &BangumiInput,
+    opts: &DownloadOptions,
+) -> anyhow::Result<()> {
+    let season = fetch_season(client, input).await?;
+    anyhow::ensure!(!season.episodes.is_empty(), "番剧没有可下载的剧集");
+    // 指定具体某集（ep）且未自定义 --page 时，默认只下这一集；
+    // 其余情况（ss 整季，或显式 --page）按 --page 选择剧集序号。
+    let selected = match input {
+        BangumiInput::Ep(ep_id) if opts.page == "1" => {
+            let index = season
+                .episodes
+                .iter()
+                .find(|episode| episode.ep_id == *ep_id)
+                .map(|episode| episode.index)
+                .with_context(|| format!("ep_id {ep_id} 不在该季剧集列表中"))?;
+            vec![index]
+        }
+        _ => select_pages(&opts.page, season.episodes.len())?,
+    };
+    let selected = if let Some(limit) = opts.limit {
+        selected.into_iter().take(limit).collect::<Vec<_>>()
+    } else {
+        selected
+    };
+
+    let archive_path = default_archive_path()?;
+    let mut archive = read_archive(&archive_path)?;
+
+    let total = selected.len();
+    for (done, ep_index) in selected.into_iter().enumerate() {
+        let episode = season
+            .episodes
+            .iter()
+            .find(|ep| ep.index == ep_index)
+            .with_context(|| format!("episode {ep_index} not found"))?;
+        if opts.skip_archived
+            && archive.contains(episode.aid, episode.cid, opts.mode.archive_mode())
+        {
+            println!("跳过已归档：{} EP{}", season.title, episode.index);
+            continue;
+        }
+        if let Some(entry) = download_episode(client, &season, episode, opts).await?
+            && opts.save_archive
+        {
+            archive.add(entry);
+            write_archive(&archive_path, &archive)?;
+        }
+        if opts.delay_per_page > 0 && done + 1 < total {
+            tokio::time::sleep(std::time::Duration::from_secs(opts.delay_per_page)).await;
+        }
+    }
+
+    Ok(())
+}
+
+async fn download_episode(
+    client: &BiliClient,
+    season: &Season,
+    episode: &Episode,
+    opts: &DownloadOptions,
+) -> anyhow::Result<Option<ArchiveEntry>> {
+    let parsed = fetch_pgc_play_info(
+        client,
+        episode.ep_id,
+        episode.aid,
+        episode.cid,
+        opts.quality,
+    )
+    .await?;
+    let part = if episode.long_title.trim().is_empty() {
+        episode.title.clone()
+    } else {
+        format!("{} {}", episode.title, episode.long_title)
+    };
+    let source = StreamSource {
+        parsed,
+        label: format!("EP{}", episode.index),
+        title: season.title.clone(),
+        page_var: episode.index.to_string(),
+        part,
+        bvid: episode.bvid.clone(),
+        aid: episode.aid,
+        cid: episode.cid,
+        owner: season.title.clone(),
+        cover_url: episode.cover.clone(),
+    };
+    download_source(client, &source, opts).await
+}
+
+/// 一个待下载的流：来自普通投稿的分 P，或番剧的单集。
+/// 已解析出可用音视频流，并带上渲染输出路径所需的模板变量。
+struct StreamSource {
+    parsed: ParsedPlay,
+    /// 进度展示前缀，如 `P1` / `EP1`
+    label: String,
+    title: String,
+    page_var: String,
+    part: String,
+    bvid: String,
+    aid: u64,
+    cid: u64,
+    owner: String,
+    cover_url: String,
+}
+
+async fn download_source(
+    client: &BiliClient,
+    source: &StreamSource,
+    opts: &DownloadOptions,
+) -> anyhow::Result<Option<ArchiveEntry>> {
     let tracks = select_download_tracks(
-        &parsed,
+        &source.parsed,
         opts.mode,
         opts.quality,
         &opts.codec,
@@ -290,9 +443,9 @@ async fn download_page(
     )?;
 
     let mut vars = BTreeMap::new();
-    vars.insert("title", info.title.clone());
-    vars.insert("page", page.index.to_string());
-    vars.insert("part", page.title.clone());
+    vars.insert("title", source.title.clone());
+    vars.insert("page", source.page_var.clone());
+    vars.insert("part", source.part.clone());
     vars.insert(
         "quality",
         tracks
@@ -310,10 +463,10 @@ async fn download_page(
             .or_else(|| tracks.audio.as_ref().map(|audio| audio.codec_name.clone()))
             .unwrap_or_else(|| "unknown".to_string()),
     );
-    vars.insert("bvid", info.bvid.clone());
-    vars.insert("aid", info.aid.to_string());
-    vars.insert("cid", page.cid.to_string());
-    vars.insert("owner", info.owner_name.clone());
+    vars.insert("bvid", source.bvid.clone());
+    vars.insert("aid", source.aid.to_string());
+    vars.insert("cid", source.cid.to_string());
+    vars.insert("owner", source.owner.clone());
 
     let mut output = render_output_path(&opts.out_dir, &opts.template, &vars);
     if output.extension().is_none() || opts.template_is_default {
@@ -323,7 +476,7 @@ async fn download_page(
     let video_path = sidecar_path(&output, "video.m4s");
     let audio_path = sidecar_path(&output, "audio.m4s");
 
-    println!("下载 P{}：{}", page.index, page.title);
+    println!("下载 {}：{}", source.label, source.part);
     if let Some(video) = &tracks.video {
         println!(
             "视频：{} {} {}kbps",
@@ -362,17 +515,17 @@ async fn download_page(
     }
 
     if opts.assets.cover {
-        let _ = download_cover(client, &info.cover_url, &output, opts.download_config).await?;
+        let _ = download_cover(client, &source.cover_url, &output, opts.download_config).await?;
     }
     if opts.assets.subtitle {
-        let subtitles = fetch_subtitles(client, info.aid, page.cid).await?;
+        let subtitles = fetch_subtitles(client, source.aid, source.cid).await?;
         let paths = download_subtitles(client, &subtitles, &output).await?;
         if paths.is_empty() {
             println!("未找到字幕。");
         }
     }
     if opts.assets.danmaku {
-        let _ = download_danmaku(client, page.cid, &output).await?;
+        let _ = download_danmaku(client, source.cid, &output).await?;
     }
 
     if opts.skip_mux {
@@ -383,7 +536,9 @@ async fn download_page(
         if tracks.audio.is_some() {
             println!("  {}", audio_path.display());
         }
-        return Ok(Some(archive_entry(info, page, &tracks, opts.mode, &output)));
+        return Ok(Some(archive_entry(
+            source.aid, source.cid, &tracks, opts.mode, &output,
+        )));
     }
 
     match opts.mode {
@@ -409,19 +564,21 @@ async fn download_page(
     }
 
     println!("下载完成：{}", output.display());
-    Ok(Some(archive_entry(info, page, &tracks, opts.mode, &output)))
+    Ok(Some(archive_entry(
+        source.aid, source.cid, &tracks, opts.mode, &output,
+    )))
 }
 
 fn archive_entry(
-    info: &VideoInfo,
-    page: &VideoPage,
+    aid: u64,
+    cid: u64,
     tracks: &SelectedDownloadTracks,
     mode: DownloadMode,
     output: &std::path::Path,
 ) -> ArchiveEntry {
     ArchiveEntry {
-        aid: info.aid,
-        cid: page.cid,
+        aid,
+        cid,
         mode: mode.archive_mode(),
         quality: tracks
             .video

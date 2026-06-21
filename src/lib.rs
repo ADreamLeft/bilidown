@@ -1,6 +1,7 @@
 pub mod archive;
 pub mod assets;
 pub mod auth;
+pub mod bangumi;
 pub mod batch;
 pub mod cli;
 pub mod client;
