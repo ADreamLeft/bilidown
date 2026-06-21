@@ -491,6 +491,107 @@ pub fn config(command: ConfigCommands) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+pub async fn search(
+    client: &BiliClient,
+    keyword: &str,
+    search_type: crate::search::SearchType,
+    order: &str,
+    duration: &str,
+    page: u32,
+    page_size: u32,
+    limit: Option<usize>,
+) -> anyhow::Result<()> {
+    use crate::search::{SearchParams, SearchResult};
+
+    let order = crate::search::resolve_order(search_type, order)?;
+    let duration = crate::search::resolve_duration(duration)?;
+    let params = SearchParams {
+        keyword,
+        search_type,
+        order,
+        duration,
+        page,
+        page_size,
+    };
+
+    let mut results = crate::search::search(client, &params).await?;
+    if let Some(limit) = limit {
+        results.truncate(limit);
+    }
+    if results.is_empty() {
+        println!("没有找到结果。");
+        return Ok(());
+    }
+
+    for (idx, result) in results.iter().enumerate() {
+        let n = idx + 1;
+        match result {
+            SearchResult::Video(video) => {
+                println!("{n:>2}. {}  [{}]", video.title, video.duration);
+                println!(
+                    "    {}  UP:{}  ▶{}  弹幕{}  {}  {}",
+                    video.bvid,
+                    video.author,
+                    humanize_count(video.play),
+                    humanize_count(video.danmaku),
+                    video.typename,
+                    format_date(video.pubdate),
+                );
+            }
+            SearchResult::User(user) => {
+                let sign = if user.sign.trim().is_empty() {
+                    "-"
+                } else {
+                    user.sign.trim()
+                };
+                println!("{n:>2}. {}  (Lv{})", user.uname, user.level);
+                println!(
+                    "    UID:{}  粉丝:{}  投稿:{}  {}",
+                    user.mid,
+                    humanize_count(user.fans),
+                    user.videos,
+                    sign,
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// 把计数转成更易读的 万/亿 形式
+fn humanize_count(n: i64) -> String {
+    if n < 0 {
+        return "-".to_string();
+    }
+    if n >= 100_000_000 {
+        format!("{:.1}亿", n as f64 / 100_000_000.0)
+    } else if n >= 10_000 {
+        format!("{:.1}万", n as f64 / 10_000.0)
+    } else {
+        n.to_string()
+    }
+}
+
+/// 把 unix 秒按 UTC+8 转成 YYYY-MM-DD（civil_from_days 算法，避免引入日期库）
+fn format_date(unix: i64) -> String {
+    if unix <= 0 {
+        return "-".to_string();
+    }
+    let days = (unix + 8 * 3600).div_euclid(86400);
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + if month <= 2 { 1 } else { 0 };
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
 pub fn archive(command: ArchiveCommands) -> anyhow::Result<()> {
     let path = default_archive_path()?;
     match command {

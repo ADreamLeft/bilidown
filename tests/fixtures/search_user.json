@@ -1,0 +1,17 @@
+{
+  "code": 0,
+  "message": "0",
+  "data": {
+    "result": [
+      {
+        "type": "bili_user",
+        "mid": 123456,
+        "uname": "某个<em class=\"keyword\">UP主</em>",
+        "usign": "这是签名",
+        "fans": 98765,
+        "videos": 42,
+        "level": 6
+      }
+    ]
+  }
+}

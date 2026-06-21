@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
-use crate::{auth, client::BiliClient, commands, config};
+use crate::{auth, client::BiliClient, commands, config, search::SearchType};
 
 pub const DEFAULT_TEMPLATE: &str = "{title}/P{page}-{part}-{quality}-{codec}.mp4";
 
@@ -24,6 +24,29 @@ enum Commands {
     Info {
         /// BV/av/普通视频 URL
         input: String,
+    },
+    /// 搜索视频或用户
+    Search {
+        /// 搜索关键词
+        keyword: String,
+        /// 搜索类型：video 或 user
+        #[arg(short = 't', long = "type", default_value_t = SearchTypeArg::Video)]
+        search_type: SearchTypeArg,
+        /// 排序：video 用 default/play/new/danmaku/favorite/comment；user 用 default/fans/level
+        #[arg(long, default_value = "default")]
+        order: String,
+        /// 时长过滤（仅 video）：all/short/medium/long/verylong
+        #[arg(long, default_value = "all")]
+        duration: String,
+        /// 页码
+        #[arg(short, long, default_value_t = 1)]
+        page: u32,
+        /// 每页数量
+        #[arg(long, default_value_t = 20)]
+        page_size: u32,
+        /// 只显示前 N 条
+        #[arg(short = 'n', long)]
+        limit: Option<usize>,
     },
     /// 下载普通视频 Web DASH 音视频流并用 ffmpeg 合并
     Download {
@@ -121,6 +144,30 @@ pub enum ArchiveCommands {
     Clear,
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum SearchTypeArg {
+    Video,
+    User,
+}
+
+impl std::fmt::Display for SearchTypeArg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            SearchTypeArg::Video => "video",
+            SearchTypeArg::User => "user",
+        })
+    }
+}
+
+impl From<SearchTypeArg> for SearchType {
+    fn from(value: SearchTypeArg) -> Self {
+        match value {
+            SearchTypeArg::Video => SearchType::Video,
+            SearchTypeArg::User => SearchType::User,
+        }
+    }
+}
+
 pub async fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let client = BiliClient::new()?;
@@ -130,6 +177,27 @@ pub async fn run() -> anyhow::Result<()> {
         Commands::Login => auth::login(&client).await?,
         Commands::Status => auth::status(&client).await?,
         Commands::Info { input } => commands::info(&client, &input).await?,
+        Commands::Search {
+            keyword,
+            search_type,
+            order,
+            duration,
+            page,
+            page_size,
+            limit,
+        } => {
+            commands::search(
+                &client,
+                &keyword,
+                search_type.into(),
+                &order,
+                &duration,
+                page,
+                page_size,
+                limit,
+            )
+            .await?
+        }
         Commands::Download {
             input,
             page,

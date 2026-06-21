@@ -11,6 +11,7 @@ pub mod fs_utils;
 pub mod input;
 pub mod mux;
 pub mod page;
+pub mod search;
 pub mod video;
 pub mod wbi;
 

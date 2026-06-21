@@ -69,6 +69,21 @@ impl BiliClient {
         Ok(())
     }
 
+    /// 确保 cookie 中存在 buvid3：搜索等接口缺少它会返回 -412 被拦截。
+    /// 缺失时访问一次 Web 首页，让服务端通过 Set-Cookie 写入 buvid3 并落盘。
+    pub async fn ensure_buvid(&self) -> anyhow::Result<()> {
+        let has_buvid = {
+            let store = self.cookie_store.lock().unwrap();
+            store.iter_any().any(|cookie| cookie.name() == "buvid3")
+        };
+        if has_buvid {
+            return Ok(());
+        }
+        let _ = self.get_text("https://www.bilibili.com/").await;
+        self.save_cookies()?;
+        Ok(())
+    }
+
     pub async fn get_text(&self, url: &str) -> anyhow::Result<String> {
         let resp = self
             .http
