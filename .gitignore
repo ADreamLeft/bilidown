@@ -2,3 +2,6 @@
 /.DS_Store
 *.tmp
 *.m4s
+
+# mdBook 课程报告的构建产物（用 `mdbook build` 可重新生成）
+/docs/course-report/book/

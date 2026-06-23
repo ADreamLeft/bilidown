@@ -1,0 +1,13 @@
+[book]
+title = "bilidown — Rust 程序设计课程实践报告"
+authors = ["胡中山 2200015477"]
+language = "zh-CN"
+src = "src"
+
+[output.html]
+default-theme = "rust"
+preferred-dark-theme = "ayu"
+
+[output.html.fold]
+enable = true
+level = 1
