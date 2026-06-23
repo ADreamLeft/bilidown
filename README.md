@@ -1,155 +1,128 @@
-# bilidown
+# bilidown: A Command-line Bilibili Video Downloader 🎬
 
-`bilidown` 是一个用 Rust 编写的 Bilibili 视频下载命令行工具，基于 Web 端 DASH 接口获取音视频流，并用 `ffmpeg` 合并输出。面向个人学习、资料备份和命令行自动化场景。
+[![CI](https://github.com/ADreamLeft/bilidown/actions/workflows/ci.yml/badge.svg)](https://github.com/ADreamLeft/bilidown/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/ADreamLeft/bilidown)](./LICENSE)
+[![Issues](https://img.shields.io/github/issues/ADreamLeft/bilidown)](https://github.com/ADreamLeft/bilidown/issues)
+[![Stars](https://img.shields.io/github/stars/ADreamLeft/bilidown?style=social)](https://github.com/ADreamLeft/bilidown)
 
-## Features
+用 Rust 写的 Bilibili 命令行下载器：扫码登录、关键词搜索、并发分片下载、断点续传，支持普通视频 / 合集 / 收藏夹 / 番剧，自动用 `ffmpeg` 合并。单个二进制，面向个人学习、资料备份和命令行自动化。
 
-- 扫码登录，复用本机登录态
-- 搜索视频与 UP 主（多种排序、时长过滤）
-- 下载普通视频、合集、收藏夹，以及番剧 / 影视（EP / SS）
-- 分 P / 剧集选择：`1`、`1,3-5`、`all`
-- 画质、编码和音频质量偏好
-- 并发 Range 分片下载、断点续传、失败重试、备用 URL fallback
-- 下载封面、字幕（转 SRT）和弹幕
-- `--audio-only` 和 `--video-only`
-- 默认配置与下载归档去重
+> 觉得好用的话点个 ⭐ 呗，这是我持续更新的动力。
 
-## Requirements
+## Overview
 
-- Rust stable（edition 2024）
-- `ffmpeg`：需在 `PATH` 中，或下载时用 `--ffmpeg-path` 指定
+- 🔑 扫码登录，复用本机登录态
+- 🔍 搜索视频与 UP 主（多种排序、时长过滤）
+- 📺 下载普通视频、合集、收藏夹
+- 🎞️ 下载番剧 / 影视（`ep` / `ss`）
+- 🎯 分 P / 剧集选择：`1`、`1,3-5`、`all`
+- 🧩 画质、编码、音频质量偏好
+- 🚀 并发 Range 分片下载、断点续传、失败重试、备用 URL fallback
+- 📎 下载封面、字幕（转 SRT）、弹幕
+- 🎵 `--audio-only` / 🎬 `--video-only`
+- 🗂️ 默认配置 + 下载归档去重
 
-## Installation
+## Demo 🎬
+
+> 动图约 10 倍速。
+
+**搜索 → 下载：**
+
+![search and download](assets/demo-search.gif)
+
+**番剧（EP / SS）：**
+
+![bangumi](assets/demo-bangumi.gif)
+
+## Getting Started 🚀
+
+### [1/3] 安装 bilidown
+
+从源码安装（需要 Rust stable，edition 2024）：
 
 ```bash
 cargo install --path .
-# 或开发时直接运行
-cargo run -- --help
 ```
 
-## Commands
+> [!TIP]
+> 暂未发布到 crates.io；发布后即可直接 `cargo install bilidown`。
 
-| 命令 | 说明 |
-|------|------|
-| `login` | 扫码登录并保存登录态 |
-| `status` | 查看当前登录态 |
-| `search <关键词>` | 搜索视频或 UP 主 |
-| `info <输入>` | 查看视频分 P / 番剧剧集与可用音视频流 |
-| `download <输入>` | 下载视频、合集、收藏夹或番剧 |
-| `config <子命令>` | 查看 / 修改默认配置 |
-| `archive <子命令>` | 查看 / 清空下载归档 |
+### [2/3] 安装 FFmpeg
 
-`<输入>` 可以是 BV 号、av 号、视频 URL、合集 / 收藏夹链接，或番剧 `ep<id>` / `ss<id>` / 播放页 URL。
+bilidown 用 `ffmpeg` 合并音视频流，需要它在 `PATH` 中（或下载时用 `--ffmpeg-path` 指定）：
 
-## Search
+- 🍎 macOS: `brew install ffmpeg`
+- 🪟 Windows: `winget install ffmpeg`
+- 🐧 Linux: `sudo apt install ffmpeg`（或对应发行版的包管理器）
+
+### [3/3] 登录
 
 ```bash
-bilidown search 关键词                       # 搜视频，综合排序
-bilidown search 关键词 --order play -n 5      # 按播放量，取前 5 条
-bilidown search 关键词 --order new --duration long   # 最新发布 + 时长 30–60 分钟
-bilidown search 用户名 --type user --order fans      # 搜 UP 主，按粉丝数
+bilidown login     # 终端里显示二维码，用 Bilibili App 扫码确认
+bilidown status    # 查看当前登录态
 ```
 
-| 选项 | 取值 | 说明 |
-|------|------|------|
-| `-t, --type` | `video`（默认）/ `user` | 搜索类型 |
-| `--order`（video） | `default` / `play` / `new` / `danmaku` / `favorite` / `comment` | 排序方式 |
-| `--order`（user） | `default` / `fans` / `level` | 排序方式 |
-| `--duration` | `all` / `short` / `medium` / `long` / `verylong` | 时长过滤（仅 video） |
-| `-p, --page` / `--page-size` | 数字 | 翻页 |
-| `-n, --limit` | 数字 | 只显示前 N 条 |
+> [!TIP]
+> 不登录也能下免费内容；高画质、大会员或番剧会员集需要先登录。
 
-视频结果会给出 BVID，可直接用于 `download`。
+## 搜索 🔍
 
-## Download
+- 🔍 搜视频（综合排序）: `bilidown search 关键词`
+- ▶️ 按播放量，取前 5 条: `bilidown search 关键词 --order play -n 5`
+- 🆕 最新发布 + 时长 30–60min: `bilidown search 关键词 --order new --duration long`
+- 👤 搜 UP 主，按粉丝数: `bilidown search 用户名 --type user --order fans`
 
-```bash
-# 普通视频：第 1 个分 P / 全部分 P
-bilidown download BV1xxxxxxx
-bilidown download BV1xxxxxxx --page all
+排序：video 支持 `default` / `play` / `new` / `danmaku` / `favorite` / `comment`，user 支持 `default` / `fans` / `level`。搜出来的 BVID 可直接丢给 `download`。
 
-# 指定画质、编码与输出目录
-bilidown download BV1xxxxxxx --quality best --codec av1,hevc,avc -o ./videos
+## 下载 📥
 
-# 番剧：下指定一集 / 整季 / 选集
-bilidown download ep374660
-bilidown download ss33802 --page all
-bilidown download ss33802 --page 1,3-5
+- 📥 第 1P / 全部分 P: `bilidown download BV1xxxxxxx` / `bilidown download BV1xxxxxxx --page all`
+- ⚙️ 指定画质、编码、目录: `bilidown download BV1xxxxxxx --quality best --codec av1,hevc,avc -o ./videos`
+- 🎞️ 番剧单集 / 整季 / 选集: `bilidown download ep374660` / `download ss33802 --page all` / `download ss33802 --page 1,3-5`
+- 🎵 只下音频 / 只下视频: `bilidown download BV1xxxxxxx --audio-only` / `--video-only`
+- 📎 封面 + 字幕 + 弹幕: `bilidown download BV1xxxxxxx --all-assets`
+- 🗂️ 写入归档并跳过已下载: `bilidown download ss33802 --page all --save-archive --skip-archived`
+- 📦 保留 m4s 不合并: `bilidown download BV1xxxxxxx --skip-mux`
 
-# 只下音频 / 只下视频 / 附加资源
-bilidown download BV1xxxxxxx --audio-only
-bilidown download BV1xxxxxxx --video-only
-bilidown download BV1xxxxxxx --all-assets
-
-# 写入归档并跳过已下载 / 保留 m4s 不合并
-bilidown download ss33802 --page all --save-archive --skip-archived
-bilidown download BV1xxxxxxx --skip-mux
-```
-
-常用选项（完整见 `bilidown download --help`）：
-
-| 选项 | 默认 | 说明 |
-|------|------|------|
-| `-p, --page` | `1` | 分 P / 剧集选择：`1`、`1,3-5`、`all` |
-| `--quality` | `best` | 画质：`best` 或 qn 数字（如 `80`、`112`） |
-| `--codec` | `av1,hevc,avc` | 编码优先级 |
-| `--audio-quality` | `best` | 音频流：`best` 或音频 id |
-| `-o, --out-dir` | `.` | 输出目录 |
-| `--template` | 见下 | 输出文件名模板 |
-| `--audio-only` / `--video-only` | — | 只下音频 / 只下视频 |
-| `--cover` / `--subtitle` / `--danmaku` / `--all-assets` | — | 下载封面 / 字幕 / 弹幕 |
-| `--connections` / `--no-multi-thread` | `8` | 并发分片连接数 / 关闭多线程 |
-| `--retries` | `3` | 失败重试次数 |
-| `--skip-mux` | — | 保留 m4s，不执行 ffmpeg 合并 |
-| `--ffmpeg-path` | — | 指定 ffmpeg 可执行文件 |
-| `--save-archive` / `--skip-archived` | — | 写入归档 / 跳过已归档 |
-| `--limit` / `--delay-per-page` | — | 批量数量上限 / 每个任务间隔秒数 |
-
-> 番剧：传 `ep<id>` 默认只下该集；传 `ss<id>` 用 `--page` 选集（`all`、`1,3-5`）。高画质或会员内容需先 `login`。
-
-## Batch Input
-
-`download` 支持合集和收藏夹链接，可配合 `--limit` 与 `--delay-per-page` 控制规模与请求间隔：
+合集 / 收藏夹链接可直接下，用 `--limit` 和 `--delay-per-page` 控制规模与请求间隔：
 
 ```bash
 bilidown download "https://space.bilibili.com/123/favlist?fid=456" --limit 10 --delay-per-page 2
 ```
 
-## Configuration
+> [!TIP]
+> 番剧：传 `ep<id>` 默认只下该集；传 `ss<id>` 用 `--page` 选集。完整参数见 `bilidown download --help`。
 
-命令行参数优先于配置文件。
+## 输出模板 🏷️
 
-```bash
-bilidown config path                      # 配置文件路径
-bilidown config show                      # 查看当前配置
-bilidown config set output_dir ./videos   # 设置默认输出目录
-bilidown config set codec hevc,avc        # 设置默认编码偏好
-bilidown config set connections 8         # 设置默认并发数
-bilidown config unset codec               # 取消某项配置
-```
-
-## Archive
-
-归档记录已完成的 `aid`、`cid` 与下载模式（`both` / `audio-only` / `video-only` 独立记录），配合 `--skip-archived` 避免重复下载。
-
-```bash
-bilidown archive list    # 查看归档
-bilidown archive clear   # 清空归档
-```
-
-## Output Template
-
-默认模板：
-
-```text
-{title}/P{page}-{part}-{quality}-{codec}.mp4
-```
-
-可用变量：`{title}`、`{page}`、`{part}`、`{quality}`、`{codec}`、`{bvid}`、`{aid}`、`{cid}`、`{owner}`
+默认模板 `{title}/P{page}-{part}-{quality}-{codec}.mp4`，可用变量：`{title}` `{page}` `{part}` `{quality}` `{codec}` `{bvid}` `{aid}` `{cid}` `{owner}`
 
 ```bash
 bilidown download BV1xxxxxxx --template "{owner}/{title}/P{page}-{part}-{cid}.mp4"
 ```
+
+## 配置与归档 🗂️
+
+配置（命令行参数优先于配置文件，`config path` 可看文件位置）：
+
+```bash
+bilidown config show                      # 查看当前配置
+bilidown config set output_dir ./videos   # 默认输出目录
+bilidown config set codec hevc,avc        # 默认编码偏好
+bilidown config set connections 8         # 默认并发数
+bilidown config unset codec               # 取消某项
+```
+
+归档记录已完成的 `aid` / `cid` 与下载模式（`both` / `audio-only` / `video-only` 各自独立），配合 `--skip-archived` 防止重复下载：
+
+```bash
+bilidown archive list     # 查看归档
+bilidown archive clear    # 清空归档
+```
+
+## Motivation 💡
+
+市面上的 B 站命令行下载器要么停更（BBDown 已归档、bili-cli-rs 三年没动），要么是带 GUI 的桌面应用。我想要一个**还在维护、纯 Rust、纯命令行**的版本：单个二进制、好脚本化、方便批量备份；顺手把 WBI 签名、并发分片、断点续传这些现代 Web 接口该有的东西都做扎实。
 
 ## Development
 
