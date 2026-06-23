@@ -55,13 +55,13 @@ enum Commands {
         /// 分 P 选择，例如 1、1,3-5、all
         #[arg(short, long, default_value = "1")]
         page: String,
-        /// 清晰度：best 或 qn 数字，例如 80、112
+        /// 清晰度：best / 360 / 480 / 720 / 1080 / 4k / 8k / hdr / dolby，或原始 qn 数字
         #[arg(long, default_value = "best")]
         quality: String,
         /// 编码优先级，例如 av1,hevc,avc
         #[arg(long, default_value = "av1,hevc,avc")]
         codec: String,
-        /// 音频流：best 或音频 id，例如 30280
+        /// 音频质量：best / high / medium / low / dolby / flac，或原始音频 id
         #[arg(long = "audio-quality", default_value = "best")]
         audio_quality: String,
         /// 输出目录

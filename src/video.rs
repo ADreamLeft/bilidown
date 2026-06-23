@@ -120,26 +120,61 @@ impl CodecPreference {
 
 impl QualityPreference {
     pub fn parse(input: &str) -> anyhow::Result<Self> {
-        if input.trim().eq_ignore_ascii_case("best") {
+        let raw = input.trim();
+        let key = raw.to_ascii_lowercase();
+        if key == "best" {
             return Ok(Self::Best);
         }
-        Ok(Self::Id(
-            input
-                .trim()
-                .parse::<u32>()
-                .with_context(|| format!("invalid quality id: {input}"))?,
-        ))
+        // 友好别名：分辨率 / 特性名 → B 站清晰度编号 qn
+        let qn = match key.as_str() {
+            "360" | "360p" => 16,
+            "480" | "480p" => 32,
+            "720" | "720p" => 64,
+            "720p60" => 74,
+            "1080" | "1080p" => 80,
+            "1080+" | "1080p+" => 112, // 1080P 高码率
+            "1080p60" => 116,          // 1080P 高帧率
+            "4k" | "2160" | "2160p" => 120,
+            "hdr" => 125,
+            "dolby" | "dovi" => 126, // 杜比视界
+            "8k" | "4320" | "4320p" => 127,
+            // 其余按原始 qn 数字解析（向后兼容）
+            other => {
+                return Ok(Self::Id(other.parse::<u32>().with_context(|| {
+                    format!(
+                        "无法识别的清晰度：{raw}（可用 best / 360 / 480 / 720 / 1080 / 4k / 8k / hdr / dolby，或原始 qn 数字）"
+                    )
+                })?));
+            }
+        };
+        Ok(Self::Id(qn))
     }
 }
 
 impl AudioQualityPreference {
     pub fn parse(input: &str) -> anyhow::Result<Self> {
-        if input.trim().eq_ignore_ascii_case("best") {
+        let raw = input.trim();
+        let key = raw.to_ascii_lowercase();
+        if key == "best" {
             return Ok(Self::Best);
         }
-        Ok(Self::Id(input.trim().parse::<u32>().with_context(
-            || format!("invalid audio quality id: {input}"),
-        )?))
+        // 友好别名：质量名 → B 站音频流 id
+        let id = match key.as_str() {
+            "high" => 30280,                        // ~192kbps
+            "medium" | "mid" => 30232,              // ~132kbps
+            "low" => 30216,                         // ~64kbps
+            "dolby" | "dovi" => 30250,              // 杜比全景声
+            "flac" | "hires" | "lossless" => 30251, // Hi-Res 无损
+            // 其余按原始音频 id 解析（向后兼容）
+            other => {
+                return Ok(Self::Id(other.parse::<u32>().with_context(|| {
+                    format!(
+                        "无法识别的音频质量：{raw}（可用 best / high / medium / low / dolby / flac，或原始音频 id）"
+                    )
+                })?));
+            }
+        };
+        Ok(Self::Id(id))
     }
 }
 

@@ -77,7 +77,7 @@ bilidown status    # 查看当前登录态
 ## 下载 📥
 
 - 📥 第 1P / 全部分 P: `bilidown download BV1xxxxxxx` / `bilidown download BV1xxxxxxx --page all`
-- ⚙️ 指定画质、编码、目录: `bilidown download BV1xxxxxxx --quality best --codec av1,hevc,avc -o ./videos`
+- ⚙️ 指定画质、编码、目录: `bilidown download BV1xxxxxxx --quality 1080 --codec av1,hevc,avc -o ./videos`
 - 🎞️ 番剧单集 / 整季 / 选集: `bilidown download ep374660` / `download ss33802 --page all` / `download ss33802 --page 1,3-5`
 - 🎵 只下音频 / 只下视频: `bilidown download BV1xxxxxxx --audio-only` / `--video-only`
 - 📎 封面 + 字幕 + 弹幕: `bilidown download BV1xxxxxxx --all-assets`
@@ -89,6 +89,9 @@ bilidown status    # 查看当前登录态
 ```bash
 bilidown download "https://space.bilibili.com/123/favlist?fid=456" --limit 10 --delay-per-page 2
 ```
+
+> [!TIP]
+> 画质 `--quality` 支持友好写法：`best`（默认，最高可用）、`360` / `480` / `720` / `1080`，以及 `4k` / `8k` / `hdr` / `dolby`，同时兼容原始 qn 数字。高画质需登录、部分需大会员。
 
 > [!TIP]
 > 番剧：传 `ep<id>` 默认只下该集；传 `ss<id>` 用 `--page` 选集。完整参数见 `bilidown download --help`。

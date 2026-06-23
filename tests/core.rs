@@ -232,3 +232,74 @@ fn parses_dash_tracks_when_bilibili_returns_duplicate_camel_and_snake_fields() {
         "https://audio.example/snake.m4s"
     );
 }
+
+#[test]
+fn parses_friendly_quality_aliases() {
+    // 友好的分辨率 / 特性名都映射到对应的 qn
+    assert_eq!(
+        QualityPreference::parse("best").unwrap(),
+        QualityPreference::Best
+    );
+    assert_eq!(
+        QualityPreference::parse("360").unwrap(),
+        QualityPreference::Id(16)
+    );
+    assert_eq!(
+        QualityPreference::parse("720p").unwrap(),
+        QualityPreference::Id(64)
+    );
+    assert_eq!(
+        QualityPreference::parse("1080").unwrap(),
+        QualityPreference::Id(80)
+    );
+    assert_eq!(
+        QualityPreference::parse("4K").unwrap(),
+        QualityPreference::Id(120)
+    );
+    assert_eq!(
+        QualityPreference::parse("hdr").unwrap(),
+        QualityPreference::Id(125)
+    );
+    assert_eq!(
+        QualityPreference::parse("dolby").unwrap(),
+        QualityPreference::Id(126)
+    );
+    assert_eq!(
+        QualityPreference::parse("8k").unwrap(),
+        QualityPreference::Id(127)
+    );
+    // 原始 qn 仍然可用（向后兼容）
+    assert_eq!(
+        QualityPreference::parse("80").unwrap(),
+        QualityPreference::Id(80)
+    );
+    // 无法识别的清晰度应报错
+    assert!(QualityPreference::parse("1234p").is_err());
+}
+
+#[test]
+fn parses_friendly_audio_aliases() {
+    assert_eq!(
+        AudioQualityPreference::parse("best").unwrap(),
+        AudioQualityPreference::Best
+    );
+    assert_eq!(
+        AudioQualityPreference::parse("high").unwrap(),
+        AudioQualityPreference::Id(30280)
+    );
+    assert_eq!(
+        AudioQualityPreference::parse("low").unwrap(),
+        AudioQualityPreference::Id(30216)
+    );
+    assert_eq!(
+        AudioQualityPreference::parse("flac").unwrap(),
+        AudioQualityPreference::Id(30251)
+    );
+    // 原始音频 id 仍然可用（向后兼容）
+    assert_eq!(
+        AudioQualityPreference::parse("30280").unwrap(),
+        AudioQualityPreference::Id(30280)
+    );
+    // 无法识别的音频质量应报错
+    assert!(AudioQualityPreference::parse("ultra").is_err());
+}
