@@ -1,0 +1,29 @@
+{
+  "code": 0,
+  "message": "success",
+  "result": {
+    "season_id": 33802,
+    "season_title": "测试番剧",
+    "title": "测试番剧 第一季",
+    "episodes": [
+      {
+        "id": 1001,
+        "aid": 11111,
+        "cid": 22222,
+        "bvid": "BV1aa4y1x7AA",
+        "title": "1",
+        "long_title": "第一集",
+        "cover": "//i0.hdslb.com/ep1.jpg"
+      },
+      {
+        "id": 1002,
+        "aid": 33333,
+        "cid": 44444,
+        "bvid": "BV1bb4y1x7BB",
+        "title": "2",
+        "long_title": "第二集",
+        "cover": "//i0.hdslb.com/ep2.jpg"
+      }
+    ]
+  }
+}
